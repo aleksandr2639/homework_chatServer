@@ -4,7 +4,6 @@ import WebSocket, { WebSocketServer } from "ws";
 import cors from "cors";
 import bodyParser from "body-parser";
 import * as crypto from "crypto";
-import { store as Store } from "./store/Store.js";
 
 const app = express();
 
@@ -21,94 +20,65 @@ app.use((req, res, next) => {
   next();
 });
 
-const store = Store;
-
-app.get("/", async (request, response) => {
-  response.send(JSON.stringify({ data: store.instances })).end();
-});
-
-app.get("/sse", (request, response) => {
-  console.log("sse connect");
-  response.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-
-  store.listen((item) => {
-    response.write("event: message\n");
-    response.write(`data: ${JSON.stringify(item)}\n\n`);
-  });
-
-  response.on("close", () => {
-    console.log("sse close");
-    response.end();
-  });
-});
-
-app.post("/", async (request, response) => {
-  const id = crypto.randomUUID();
-  const log = {
-    id,
-    info: "Create command",
-    timestamp: store.getTimestamp(),
-  };
-
-  store.sendEvent(log);
-  setTimeout(() => {
-    store.addInstance({
-      id,
-      state: "stopped",
-    });
-  }, 10000);
-
-  return response
-    .status(201)
-    .send(JSON.stringify({ status: "OK" }))
-    .end();
-});
-
-app.delete("/", (request, response) => {
-  const { id } = request.query;
-
-  const instance = store.instances.find((instance) => instance.id === id);
-  if (!instance) {
-    return response
-      .status(404)
-      .send(JSON.stringify({ message: "Instance not found" }))
-      .end();
+const userState = [];
+app.post("/new-user", async (request, response) => {
+  if (Object.keys(request.body).length === 0) {
+    const result = {
+      status: "error",
+      message: "This name is already taken!",
+    };
+    response.status(400).send(JSON.stringify(result)).end();
   }
-  store.removeInstance(id);
-
-  return response
-    .status(200)
-    .send(JSON.stringify({ status: "OK" }))
-    .end();
+  const { name } = request.body;
+  const isExist = userState.find((user) => user.name === name);
+  if (!isExist) {
+    const newUser = {
+      id: crypto.randomUUID(),
+      name: name,
+    };
+    userState.push(newUser);
+    const result = {
+      status: "ok",
+      user: newUser,
+    };
+    response.send(JSON.stringify(result)).end();
+  } else {
+    const result = {
+      status: "error",
+      message: "This name is already taken!",
+    };
+    response.status(409).send(JSON.stringify(result)).end();
+  }
 });
 
 const server = http.createServer(app);
 const wsServer = new WebSocketServer({ server });
 wsServer.on("connection", (ws) => {
-  ws.on("message", (message) => {
-    const { id } = JSON.parse(message);
-
-    store.changeStatus(id);
-
-    const eventData = JSON.stringify(
-      store.instances.filter((item) => item.id === id)
-    );
-
-    [...wsServer.clients]
-      .filter((client) => client.readyState === WebSocket.OPEN)
-      .forEach((client) => {
-        client.send(eventData);
-      });
+  ws.on("message", (msg, isBinary) => {
+    const receivedMSG = JSON.parse(msg);
+    console.dir(receivedMSG);
+    if (receivedMSG.type === "exit") {
+      const idx = userState.findIndex(
+        (user) => user.name === receivedMSG.user.name
+      );
+      userState.splice(idx, 1);
+      [...wsServer.clients]
+        .filter((o) => o.readyState === WebSocket.OPEN)
+        .forEach((o) => o.send(JSON.stringify(userState)));
+      return;
+    }
+    if (receivedMSG.type === "send") {
+      [...wsServer.clients]
+        .filter((o) => o.readyState === WebSocket.OPEN)
+        .forEach((o) => o.send(msg, { binary: isBinary }));
+    }
   });
-
-  ws.send(JSON.stringify("connection"));
+  [...wsServer.clients]
+    .filter((o) => o.readyState === WebSocket.OPEN)
+    .forEach((o) => o.send(JSON.stringify(userState)));
 });
 
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 5000;
 
 const bootstrap = async () => {
   try {
